@@ -32,8 +32,7 @@ npm-debug.log*
 # Test coverage
 coverage/
 
-# Local test scripts
-tests/
+# Regression tests are versioned; keep ad-hoc local probes outside tests/.
 
 # Agent instructions (local development notes)
 agents.md

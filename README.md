@@ -1,5 +1,7 @@
 # ChatGPT Escalation MCP Server
 
+Windows executable matching and restart behavior are being hardened for same-named unified ChatGPT/Codex processes. See [application identity configuration and validation](docs/WINDOWS-APP-IDENTITY.md). Unified-app UI compatibility remains unverified.
+
 An MCP (Model Context Protocol) server that enables autonomous coding agents to escalate complex questions to the ChatGPT Desktop app automatically — **ToS-compliant** via native UI automation.
 
 **What this does:** This tool lets autonomous coding agents (Copilot, Claude, Cline, Roo, etc.) escalate hard questions to the *ChatGPT Desktop app* on your computer. It automates ChatGPT the same way a human would — clicking the UI, sending the question, waiting for the response, copying it — then returns the answer to your agent so it can continue working *without you*.

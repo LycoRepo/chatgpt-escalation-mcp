@@ -41,36 +41,35 @@ function withMutex<T>(fn: () => Promise<T>): Promise<T> {
 /**
  * Get the path to the driver script for the current platform
  */
-function getDriverPath(platform: "win" | "mac"): string {
-  // Try multiple locations for the driver
-  // Use process.cwd() and known paths relative to package root
+export function getDriverPath(platform: "win" | "mac"): string {
+  // Resolve from the installed package, never a caller-controlled working directory.
   const scriptName = platform === "win" ? "driver_robust.py" : "driver.scpt";
-  
-  const possiblePaths = [
-    // From package root (when running via npx or npm or from dist/bin/cli.js)
-    path.join(process.cwd(), "src", "drivers", platform, scriptName),
-    path.join(process.cwd(), "drivers", platform, scriptName),
-    // From compiled dist/ when running as dist/bin/cli.js or dist/src/server.js
-    path.join(__dirname, "..", "..", "src", "drivers", platform, scriptName),
-    path.join(__dirname, "..", "..", "..", "src", "drivers", platform, scriptName),
-    // From node_modules installation
-    path.join(__dirname, "..", "drivers", platform, scriptName),
-    path.join(__dirname, "..", "..", "drivers", platform, scriptName),
-  ];
-
-  for (const p of possiblePaths) {
-    if (fs.existsSync(p)) {
-      return p;
+  let packageRoot = __dirname;
+  while (true) {
+    const manifest = path.join(packageRoot, "package.json");
+    if (fs.existsSync(manifest) && JSON.parse(fs.readFileSync(manifest, "utf8")).name === "chatgpt-escalation-mcp") break;
+    const parent = path.dirname(packageRoot);
+    if (parent === packageRoot) throw new Error("Cannot locate the installed escalation package");
+    packageRoot = parent;
+  }
+  for (const directory of ["src/drivers", "drivers"]) {
+    const root = path.join(packageRoot, directory);
+    const candidate = path.join(root, platform, scriptName);
+    if (fs.existsSync(candidate)) {
+      const realRoot = fs.realpathSync(root);
+      const realCandidate = fs.realpathSync(candidate);
+      const relative = path.relative(realRoot, realCandidate);
+      if (relative.startsWith("..") || path.isAbsolute(relative)) throw new Error("Driver resolves outside the installed package");
+      return realCandidate;
     }
   }
-
-  throw new Error(`Driver not found for platform: ${platform}. Searched: ${possiblePaths.join(", ")}`);
+  throw new Error(`Driver not found in the installed package for platform: ${platform}`);
 }
 
 /**
  * Execute a driver command on Windows using Python
  */
-async function executeWindowsDriver(command: DriverCommand): Promise<DriverResult> {
+async function executeWindowsDriver(command: DriverCommand, config?: AppConfig): Promise<DriverResult> {
   const driverPath = getDriverPath("win");
   logger.debug("Executing Windows driver", { command: command.action, driverPath });
 
@@ -81,15 +80,15 @@ async function executeWindowsDriver(command: DriverCommand): Promise<DriverResul
     return { success: false, error: `Driver not found: ${path.basename(validatedPath)}` };
   }
 
-  // Security: Ensure path is within src/drivers directory
-  const driversDir = path.resolve(process.cwd(), "src", "drivers");
-  if (!validatedPath.startsWith(driversDir)) {
-    logger.error("Driver path outside allowed directory", { path: validatedPath });
-    return { success: false, error: "Invalid driver path" };
-  }
+  // getDriverPath already checks the real path against the installed package root.
 
   return new Promise((resolve) => {
-    const python = spawn("python", [validatedPath], {
+    const env = { ...process.env };
+    if (config?.chatgpt.executablePath !== undefined) env.CHATGPT_EXECUTABLE_PATH = config.chatgpt.executablePath;
+    if (config?.chatgpt.allowUnifiedApp !== undefined) env.CHATGPT_ALLOW_UNIFIED_APP = config.chatgpt.allowUnifiedApp ? "1" : "0";
+    if (config?.chatgpt.restartTarget !== undefined) env.CHATGPT_RESTART_TARGET = config.chatgpt.restartTarget ? "1" : "0";
+    const python = spawn(config?.chatgpt.pythonExecutable || env.CHATGPT_PYTHON_EXECUTABLE || "python", [validatedPath], {
+      env,
       stdio: ["pipe", "pipe", "pipe"],
       detached: false,
       shell: false, // Security: Never use shell to prevent command injection
@@ -182,10 +181,11 @@ async function executeMacDriver(command: DriverCommand): Promise<DriverResult> {
  */
 async function executeDriver(
   platform: "win" | "mac",
-  command: DriverCommand
+  command: DriverCommand,
+  config?: AppConfig
 ): Promise<DriverResult> {
   if (platform === "win") {
-    return executeWindowsDriver(command);
+    return executeWindowsDriver(command, config);
   } else {
     return executeMacDriver(command);
   }
@@ -267,7 +267,7 @@ async function sendEscalation(
     });
 
     // Step 1: Check ChatGPT is available
-    const checkResult = await executeDriver(platform, { action: "check_chatgpt" });
+    const checkResult = await executeDriver(platform, { action: "check_chatgpt" }, config);
     if (!checkResult.success) {
       throw new Error(`ChatGPT Desktop check failed: ${checkResult.error}`);
     }
@@ -308,7 +308,7 @@ async function sendEscalation(
           message: messageToSend,
           timeout_ms: responseTimeout,
         },
-      });
+      }, config);
       if (!escalateResult.success) {
         // Include runId in error for correlation
         const errorData = escalateResult as { error?: string; failed_step?: number; error_reason?: string };
@@ -372,7 +372,7 @@ async function checkAvailability(
   const { platform } = config.chatgpt;
 
   try {
-    const result = await executeDriver(platform, { action: "check_chatgpt" });
+    const result = await executeDriver(platform, { action: "check_chatgpt" }, config);
 
     if (!result.success) {
       return { available: false, message: result.error || "Driver error" };
@@ -406,7 +406,7 @@ async function sendRawMessage(
     logger.info("Sending raw message via ChatGPT Desktop", { projectId, platform });
 
     // Step 1: Check ChatGPT is available
-    const checkResult = await executeDriver(platform, { action: "check_chatgpt" });
+    const checkResult = await executeDriver(platform, { action: "check_chatgpt" }, config);
     if (!checkResult.success) {
       throw new Error(`ChatGPT Desktop check failed: ${checkResult.error}`);
     }
@@ -417,7 +417,7 @@ async function sendRawMessage(
     }
 
     // Step 2: Focus ChatGPT window
-    const focusResult = await executeDriver(platform, { action: "focus_chatgpt" });
+    const focusResult = await executeDriver(platform, { action: "focus_chatgpt" }, config);
     if (!focusResult.success) {
       throw new Error(`Failed to focus ChatGPT: ${focusResult.error}`);
     }
@@ -437,7 +437,7 @@ async function sendRawMessage(
         title: conversationTitle,
         project_name: projectFolder || undefined
       },
-    });
+    }, config);
     if (!findResult.success) {
       throw new Error(`Failed to find conversation "${conversationTitle}": ${findResult.error}`);
     }
@@ -446,7 +446,7 @@ async function sendRawMessage(
     const sendResult = await executeDriver(platform, {
       action: "send_message",
       params: { message },
-    });
+    }, config);
     if (!sendResult.success) {
       throw new Error(`Failed to send message: ${sendResult.error}`);
     }
@@ -455,13 +455,13 @@ async function sendRawMessage(
     const waitResult = await executeDriver(platform, {
       action: "wait_for_response",
       params: { timeout_ms: responseTimeout },
-    });
+    }, config);
     if (!waitResult.success) {
       throw new Error(`Timeout waiting for response: ${waitResult.error}`);
     }
 
     // Step 6: Get the response
-    const getResult = await executeDriver(platform, { action: "get_last_response" });
+    const getResult = await executeDriver(platform, { action: "get_last_response" }, config);
     if (!getResult.success) {
       throw new Error(`Failed to get response: ${getResult.error}`);
     }

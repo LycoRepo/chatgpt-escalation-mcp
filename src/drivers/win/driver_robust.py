@@ -43,50 +43,18 @@ class RobustDriver:
         self._last_prompt = None
     
     def check_chatgpt(self) -> dict:
-        """Check if ChatGPT is available (running or can be started)."""
-        # Try to find existing window first
-        import win32gui
-        import win32process
-        import psutil
-        
-        def find_chatgpt_window():
-            result = []
-            def callback(hwnd, _):
-                if win32gui.IsWindow(hwnd):
-                    try:
-                        _, pid = win32process.GetWindowThreadProcessId(hwnd)
-                        proc = psutil.Process(pid)
-                        if proc.name().lower() == "chatgpt.exe":
-                            title = win32gui.GetWindowText(hwnd)
-                            if title:
-                                result.append((hwnd, title))
-                    except:
-                        pass
-                return True
-            win32gui.EnumWindows(callback, None)
-            return result
-        
-        windows = find_chatgpt_window()
-        
-        if windows:
-            hwnd, title = windows[0]
-            return {
-                "success": True,
-                "data": {
-                    "found": True,
-                    "title": title,
-                    "message": "ChatGPT Desktop is running"
-                }
-            }
-        else:
-            return {
-                "success": True,
-                "data": {
-                    "found": False,
-                    "message": "ChatGPT Desktop not running (will be started automatically)"
-                }
-            }
-    
+        """Read-only availability check using the same identity policy as execution."""
+        hwnd = self.flow._find_chatgpt_hwnd()
+        return {
+            "success": True,
+            "data": {
+                "found": bool(hwnd),
+                "message": "Verified target window found" if hwnd else
+                    "No unique verified target window. Configure CHATGPT_EXECUTABLE_PATH and open the intended app.",
+                "ui_compatibility_verified": False,
+            },
+        }
+
     def focus_chatgpt(self) -> dict:
         """Focus or start ChatGPT window."""
         # Use robust flow's step sequence

@@ -16,6 +16,7 @@ import os
 import ctypes
 from contextlib import contextmanager
 from datetime import datetime
+from app_identity import AppIdentity
 
 # Add driver directory to path
 _driver_dir = os.path.dirname(os.path.abspath(__file__))
@@ -137,6 +138,7 @@ class RobustChatGPTFlow:
     """
     
     def __init__(self):
+        self.target = AppIdentity.from_environment()
         self.hwnd = None
         self.window_rect = None
         # Allow test harness to disable keyboard fallbacks to avoid global Tab usage in CI
@@ -147,6 +149,19 @@ class RobustChatGPTFlow:
     # =========================================================================
     # SAFETY GUARDRAILS: Window State & Focus Management
     # =========================================================================
+
+    def _is_target_window(self) -> bool:
+        """Revalidate cached handles before focusing or changing a window."""
+        import win32gui
+        import win32process
+        import psutil
+        try:
+            if not self.hwnd or not win32gui.IsWindow(self.hwnd):
+                return False
+            _, pid = win32process.GetWindowThreadProcessId(self.hwnd)
+            return self.target.matches_process(psutil.Process(pid))
+        except Exception:
+            return False
 
     def _ensure_foreground(self, max_attempts: int = 3) -> bool:
         """
@@ -163,6 +178,8 @@ class RobustChatGPTFlow:
 
         for attempt in range(1, max_attempts + 1):
             try:
+                if not self._is_target_window():
+                    return False
                 # Check current foreground
                 fg_hwnd = win32gui.GetForegroundWindow()
                 if fg_hwnd == self.hwnd:
@@ -234,6 +251,8 @@ class RobustChatGPTFlow:
         import win32gui
 
         try:
+            if not self._is_target_window():
+                return False
             if not self.hwnd:
                 log_debug("  [safety] ✗ No window handle")
                 return False
@@ -306,6 +325,9 @@ class RobustChatGPTFlow:
                 return False
         
         # 2. Restore from minimized
+        if not self._is_target_window():
+            log_debug(f"  {prefix} Target identity changed; refusing window input")
+            return False
         if win32gui.IsIconic(self.hwnd):
             log_debug(f"  {prefix} Window minimized, restoring...")
             try:
@@ -527,154 +549,94 @@ class RobustChatGPTFlow:
     # =========================================================================
     
     def step1_kill_chatgpt(self, timeout: float = 5.0) -> bool:
-        """
-        Kill ChatGPT if running.
-        
-        Verification: Process no longer exists.
-        """
+        """Optional restart, restricted to an explicitly configured legacy executable."""
+        if not self.target.can_restart:
+            log_debug("Restart skipped: preserve running applications")
+            return True
         import psutil
-        
-        log_debug("STEP 1: Killing ChatGPT if running...")
-        
-        # Find and kill
-        killed = False
-        for proc in psutil.process_iter(['name', 'pid']):
+        for proc in psutil.process_iter(['pid', 'exe']):
             try:
-                if proc.info['name'] and proc.info['name'].lower() == "chatgpt.exe":
-                    log_debug(f"  Terminating PID {proc.info['pid']}")
-        
+                if self.target.matches_process(proc):
                     proc.terminate()
-                    killed = True
             except (psutil.NoSuchProcess, psutil.AccessDenied):
                 pass
-        
-        if not killed:
-            log_debug("  ChatGPT was not running")
-            return True
-        
-        # VERIFY: Wait for process to actually exit
         start = time.time()
-        while (time.time() - start) < timeout:
-            still_running = False
-            for proc in psutil.process_iter(['name']):
-                try:
-                    if proc.info['name'] and proc.info['name'].lower() == "chatgpt.exe":
-                        still_running = True
-                        break
-                except (psutil.NoSuchProcess, psutil.AccessDenied):
-                    pass
-
-            if not still_running:
-                log_debug("  ✓ VERIFIED: ChatGPT process terminated")
+        while time.time() - start < timeout:
+            if not any(self.target.matches_process(proc) for proc in psutil.process_iter(['pid', 'exe'])):
                 return True
-
             time.sleep(0.3)
-
-        log_debug("  ✗ FAILED: ChatGPT still running after timeout")
         return False
-    
-    # =========================================================================
-    # STEP 2: Start ChatGPT
-    # =========================================================================
-    
+
     def step2_start_chatgpt(self, timeout: float = 15.0) -> bool:
-        """
-        Start ChatGPT Desktop.
-        
-        Verification: Window handle found AND window is visible.
-        """
+        """Reuse a verified running window; launch only a configured executable."""
         import subprocess
-        import win32gui
-        import win32process
-        import psutil
-        
-        log_debug("STEP 2: Starting ChatGPT...")
-        
-        # Launch
-        subprocess.Popen(
-            'start "" "ChatGPT"',
-            shell=True,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL
-        )
-        
-        # VERIFY: Wait for window to appear
+        hwnd = self._find_chatgpt_hwnd()
+        if hwnd:
+            self.hwnd = hwnd
+            import win32gui
+            self.window_rect = win32gui.GetWindowRect(hwnd)
+            return True
+        executable = self.target.executable_path
+        if not executable or not os.path.isfile(executable):
+            log_debug("No verified target window; configure CHATGPT_EXECUTABLE_PATH")
+            return False
+        subprocess.Popen([executable], shell=False,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         start = time.time()
-        while (time.time() - start) < timeout:
+        while time.time() - start < timeout:
             hwnd = self._find_chatgpt_hwnd()
             if hwnd:
-                # Additional check: window must be visible
-                if win32gui.IsWindowVisible(hwnd):
-                    self.hwnd = hwnd
-                    self.window_rect = win32gui.GetWindowRect(hwnd)
-                    title = win32gui.GetWindowText(hwnd)
-                    log_debug(f"  ✓ VERIFIED: Window found (hwnd={hwnd}, title='{title}')")
-                    
-                    # Extra wait for UI to fully initialize
-                    time.sleep(1.5)
-                    return True
-            
-            time.sleep(0.5)
-        
-        log_debug("  ✗ FAILED: Window not found after timeout")
+                self.hwnd = hwnd
+                import win32gui
+                self.window_rect = win32gui.GetWindowRect(hwnd)
+                return True
+            time.sleep(0.3)
         return False
-    
+
     def _find_chatgpt_hwnd(self):
-        """Find ChatGPT window handle."""
+        """Return a unique visible window belonging to the verified executable."""
         import win32gui
         import win32process
         import psutil
-        
-        result = [None]
-        
+        matches = []
         def callback(hwnd, _):
             if win32gui.IsWindow(hwnd) and win32gui.IsWindowVisible(hwnd):
                 try:
                     _, pid = win32process.GetWindowThreadProcessId(hwnd)
-                    proc = psutil.Process(pid)
-                    if proc.name().lower() == "chatgpt.exe":
+                    if self.target.matches_process(psutil.Process(pid)):
                         title = win32gui.GetWindowText(hwnd)
                         if title and "IME" not in title and "Default" not in title:
-                            result[0] = hwnd
-                            return False  # Stop enumeration
-                except:
+                            matches.append(hwnd)
+                except Exception:
                     pass
             return True
-        
         try:
             win32gui.EnumWindows(callback, None)
-        except Exception as e:
-            # EnumWindows failed (permission or runtime issue); try fallback method
-            log_debug(f"  EnumWindows failed: {e} - trying psutil + pywinauto fallback")
-            # Call a smaller fallback routine to avoid nested try/except confusion
-            try:
-                return self._find_chatgpt_hwnd_fallback(psutil)
-            except Exception as e2:
-                log_debug(f"  Fallback via pywinauto failed: {e2}")
-            # If fallback failed, return whatever we have (likely None)
-            return result[0]
-        return result[0]
+        except Exception as error:
+            log_debug(f"Window enumeration failed: {error}; using verified fallback")
+            return self._find_chatgpt_hwnd_fallback(psutil)
+        if len(matches) != 1:
+            log_debug(f"Expected one verified window; found {len(matches)}")
+            return None
+        return matches[0]
 
     def _find_chatgpt_hwnd_fallback(self, psutil_module):
-        """Fallback: use psutil + pywinauto to find a top window for chatgpt.exe"""
+        """Fallback selection is subject to the same executable and uniqueness checks."""
         from pywinauto import Application
-
-        for proc in psutil_module.process_iter(['name', 'pid']):
+        matches = []
+        for proc in psutil_module.process_iter(['pid', 'exe']):
             try:
-                if proc.info['name'] and proc.info['name'].lower() == 'chatgpt.exe':
-                    pid = proc.info['pid']
-                    try:
-                        app = Application(backend='uia').connect(process=pid)
-                        top = app.top_window()
-                        hwnd = top.handle
-                        if hwnd:
-                            return hwnd
-                    except Exception:
-                        continue
+                if not self.target.matches_process(proc):
+                    continue
+                app = Application(backend='uia').connect(process=proc.pid)
+                top = app.top_window()
+                if top.handle and top.is_visible():
+                    matches.append(top.handle)
             except Exception:
                 continue
-        return None
-    
+        unique = set(matches)
+        return next(iter(unique)) if len(unique) == 1 else None
+
     # =========================================================================
     # STEP 3: Focus ChatGPT
     # =========================================================================

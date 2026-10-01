@@ -162,6 +162,17 @@ export function validateConfig(config: AppConfig): ConfigValidationResult {
     }
 
     // Check timeout
+    for (const field of ["executablePath", "pythonExecutable"] as const) {
+      const value = config.chatgpt[field];
+      if (value !== undefined && (typeof value !== "string" || !path.win32.isAbsolute(value) || !path.win32.parse(value).root.includes(":"))) {
+        errors.push(`chatgpt.${field} must be an absolute Windows path`);
+      }
+    }
+    for (const field of ["allowUnifiedApp", "restartTarget"] as const) {
+      if (config.chatgpt[field] !== undefined && typeof config.chatgpt[field] !== "boolean") {
+        errors.push(`chatgpt.${field} must be a boolean`);
+      }
+    }
     if (config.chatgpt.responseTimeout && config.chatgpt.responseTimeout < 60000) {
       warnings.push("Timeout is very low (< 60s), ChatGPT responses may take longer");
     }

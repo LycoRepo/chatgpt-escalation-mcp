@@ -69,6 +69,10 @@ export interface ChatGPTConfig {
   platform: Platform;
   responseTimeout: number;
   projects: Record<string, ProjectEntry>; // projectId -> conversation title or ProjectConfig
+  executablePath?: string; // Explicit Windows application executable; never matched by name alone
+  pythonExecutable?: string; // Optional isolated Python runtime
+  allowUnifiedApp?: boolean; // Explicit identity opt-in; does not certify UI compatibility
+  restartTarget?: boolean; // Defaults to false; never restarts the unified ChatGPT/Codex app
 }
 
 export interface LoggingConfig {
