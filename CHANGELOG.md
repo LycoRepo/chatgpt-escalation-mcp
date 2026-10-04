@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **Windows Application Identity Policy** (`docs/WINDOWS-APP-IDENTITY.md`)
+  - Optional `chatgpt.executablePath`, `chatgpt.pythonExecutable`, `chatgpt.allowUnifiedApp` and `chatgpt.restartTarget` settings, with `CHATGPT_EXECUTABLE_PATH`, `CHATGPT_PYTHON_EXECUTABLE`, `CHATGPT_ALLOW_UNIFIED_APP` and `CHATGPT_RESTART_TARGET` environment equivalents (explicit JSON fields take precedence)
+  - Python and Node regression tests covering identity matching, restart gating, window selection and configuration forwarding
+
+### Changed
+- **Process and window matching now uses the full executable path** instead of the process name. Availability checks, restart, primary and fallback window selection, and cached-handle revalidation all use the same policy, so a same-named executable (including a unified `ChatGPT.exe`) is no longer a target.
+- **Restart is opt-in.** `restartTarget: true` requires an explicit `executablePath`, and the unified `OpenAI.Codex_*` application is never restarted. Retries therefore no longer recreate application state: the existing "fresh state on each retry" behavior applies only when restart is explicitly configured.
+- **Ambiguous window selection fails closed.** Exactly one eligible visible window is required; otherwise the step fails instead of silently picking the first match.
+- **Launching requires a configured executable.** The generic `start "" "ChatGPT"` shell command was removed; a verified running window is reused when no restart is requested.
+- **Legacy auto-discovery is restricted** to known ChatGPT Store package paths under the WindowsApps root.
+- Driver resolution is relative to the installed package rather than the MCP client's working directory.
+
+### Notes
+- Unified-app UI compatibility (navigation, composer, response completion, copy controls) is **not** verified by this change; `ui_compatibility_verified: false` is reported explicitly.
+
 ## [1.1.0] - 2025-12-02
 
 ### Added
