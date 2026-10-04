@@ -31,6 +31,10 @@ test('Windows optional identity fields are validated without running a driver',(
     const invalid=config();invalid.chatgpt[key]=value;
     assert.equal(validateConfig(invalid).valid,false);
   }
+  const missingExecutable=config();missingExecutable.chatgpt.restartTarget=true;
+  assert.equal(validateConfig(missingExecutable).valid,false);
+  const explicitRestart=config();explicitRestart.chatgpt.executablePath='C:\\Apps\\ChatGPT.exe';explicitRestart.chatgpt.restartTarget=true;
+  assert.equal(validateConfig(explicitRestart).valid,true);
 });
 test('backend passes explicit identity and isolated Python options to every driver check',async()=>{
   const childProcess=require('node:child_process');

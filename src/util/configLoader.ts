@@ -173,6 +173,9 @@ export function validateConfig(config: AppConfig): ConfigValidationResult {
         errors.push(`chatgpt.${field} must be a boolean`);
       }
     }
+    if (config.chatgpt.restartTarget === true && !config.chatgpt.executablePath) {
+      errors.push("chatgpt.restartTarget requires chatgpt.executablePath");
+    }
     if (config.chatgpt.responseTimeout && config.chatgpt.responseTimeout < 60000) {
       warnings.push("Timeout is very low (< 60s), ChatGPT responses may take longer");
     }
